@@ -138,7 +138,7 @@ DEFAULT_EVENT_ICONS = {
     'Local Area Emergency': 'hass:alert',
     'Low Water Advisory': 'hass:wave',
     'Marine Weather Statement': 'hass:sail-boat',
-    'Nuclear Power Plant Warning': 'hass:alert',
+    'Nuclear Power Plant Warning': 'hass:radioactive',
     'Radiological Hazard Warning': 'hass:biohazard',
     'Red Flag Warning': 'hass:fire-alert',
     'Rip Current Statement': 'hass:surfing',
