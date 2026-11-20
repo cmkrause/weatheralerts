@@ -10,37 +10,23 @@ All configuration is performed through the Home Assistant UI.
 
 ## Configuration Flow
 
-On initial installation and on setup of new config entries, you will be presented with a config flow to setup the Weather Alerts integration.
+Choose **Settings → Devices & services → Integrations → Weather Alerts**. Select the gear beside the entry you want to change. On a new entry, setup opens the same coverage choice first.
 
-### Step 1: Location (Optional)
+### Choose alert coverage
 
-If you have a Home zone configured in Home Assistant, the integration will prepopulate your latitude and longitude using your Home zone configuration.
+| Coverage | How it works |
+| --- | --- |
+| **All alerts for configured areas** | Monitor fixed NWS codes. On new entries, the optional location lookup sends the coordinates you submit to NWS to suggest codes. Clear both coordinate fields to enter codes manually. |
+| **Follow Home — NWS matches** | Send the current coordinates of `zone.home` to NWS on each poll. This is the setting used by the earlier **Only show alerts for the Home location** checkbox. |
+| **Follow Home — match privately on this device** | Discover Home’s county or marine feed and test alert boundaries on the Home Assistant server. NWS receives requests for public areas. The sensor exposes the discovered feed in `monitored_codes`. |
 
-If latitude and longitude are not prepopulated, you may be provide your latitude and longitude and the integration will attempt to automatically determine the appropriate NWS forecast zone and county codes for you in the next step of the config flow.
+Both Follow Home options skip the optional setup lookup. Moving Home takes effect on the next poll. An existing entry keeps its sensor and its configured codes when you change how it follows Home. [Private coverage and alert maps](local_geometry.md)
 
-If latitude and longitude are not prepopulated, this step may be skipped by leaving the latitude and longitude fields blank, to manually enter zone and county codes in the next step of the config flow.
+### Configured areas
 
-The latitude and longitude should be entered as numbers only (no degree symbol or cardinal direction appended); in the United States the latitude will be a positive number and longitude will be a negative number. If you leave the latitude and longitude fields blank, you will need to find your codes; just ask Google search:
-- what is the nws zone and county code for _city_, _state_
+Enter a forecast zone such as `WIZ038`. You may also include a county such as `WIC087` and a comma-separated list of marine zones such as `LMZ043,LMZ080`.
 
-In the Google search, just replace _city_ and _state_ with your city and state. Google should reply with a NWS zone Code that is 3 letters (State abbreviation + Z) + 3 numbers (xxZ###) and you should also see a 3 letter (State abbreviation + C) + 3 numbers (xxC###) county code listed under FIPS County Code.
-
-### Step 2: Zone Selection
-
-- Zone Code (required)
-  Example: WIZ038
-- County Code (optional)
-  Example: WIC087
-- Marine Zones (optional, comma-separated)
-  Example: LMZ043,LMZ080
-
-Multiple zone types may be combined into a single sensor.
-
-### Step 3: Sensor Update Settings
-
-**Only show alerts for the Home location** is off by default. Enable it during setup or under **Settings → Devices & services → Weather Alerts → Configure** to monitor the center of `zone.home`. Each poll sends the current Home coordinates to the National Weather Service. Moving Home takes effect on the next poll.
-
-With this option on, NWS selects the alerts for that point, including polygon warnings, county watches, and forecast, fire-weather, or marine zone alerts. Additional zones configured on the entry do not extend the coverage of a point query. The existing sensor keeps its entity ID. Its `zone` and per-alert `zoneid` fields continue to identify the configured feed. The `location_mode` attribute reads `home` when the point feed is in use. Turn the option off to resume monitoring all configured codes.
+### Sensor update settings
 
 - Update Interval: 30–600 seconds
 - API Timeout: 10–60 seconds

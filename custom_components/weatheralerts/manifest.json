@@ -10,11 +10,14 @@
   ],
   "config_flow": true,
   "dependencies": [
-    "http"
+    "http",
+    "websocket_api"
   ],
   "documentation": "https://github.com/custom-components/weatheralerts",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/custom-components/weatheralerts/issues",
-  "requirements": [],
-  "version": "2026.5.3"
+  "requirements": [
+    "shapely==2.1.2"
+  ],
+  "version": "2026.11.1b1"
 }

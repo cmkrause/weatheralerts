@@ -1,7 +1,7 @@
 """Constants for weatheralerts integration."""
 
 DOMAIN = "weatheralerts"
-VERSION = "2026.5.3"
+VERSION = "2026.11.1b1"
 
 # Configuration keys
 CONF_ZONE = "zone"
@@ -14,6 +14,10 @@ CONF_ENTITY_NAME = "entity_name"
 CONF_MARINE_ZONES = "marine_zones"
 CONF_UPDATE_INTERVAL = "update_interval"
 CONF_API_TIMEOUT = "api_timeout"
+CONF_COVERAGE = "coverage"
+MODE_ZONES = "zones"
+MODE_HOME = "home"
+MODE_PRIVATE = "private"
 CONF_USE_HOME = "use_home_location"
 CONF_DEDUPLICATE_ALERTS = "deduplicate_alerts"
 CONF_DEDUPLICATE_ALERTS_BY_ID = "deduplicate_alerts_by_id"
@@ -184,3 +188,7 @@ DEFAULT_EVENT_ICONS = {
     'Winter Storm Watch': 'hass:snowflake-alert',
     'Winter Weather Advisory': 'hass:snowflake-alert',
 }
+
+def coverage(settings):
+    """Read the previous opt-in checkbox until the entry is edited."""
+    return settings.get(CONF_COVERAGE, MODE_HOME if settings.get(CONF_USE_HOME) else MODE_ZONES)

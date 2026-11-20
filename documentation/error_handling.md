@@ -15,6 +15,8 @@ If the API becomes unavailable:
 
 ## Error History
 
+In private mode, a boundary lookup can fail even when NWS successfully returns the alerts. The sensor keeps alerts whose coverage is uncertain and includes them in `unresolved_alerts`. A partially resolved map reports how many affected zones it can show. [Private coverage and alert maps](local_geometry.md)
+
 In Home location mode, a failed poll can reuse the last successful response for the same point. Check `error[0].type` for `success` before interpreting a count as current. During an outage the cache cannot report newly issued warnings. An alert stays in the cache until 60 minutes after its expiry. An unreadable expiry keeps the alert in the cache.
 
 If Home is unavailable, or a new location has no successful response yet, the sensor is unavailable or Home Assistant retries setup. A valid empty NWS response clears the count. A server error, timeout, or incomplete response cannot clear it. Rate-limited requests respect the NWS retry interval.

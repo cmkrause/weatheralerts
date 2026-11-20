@@ -2,11 +2,11 @@
   "config": {
     "step": {
       "user": {
-        "title": "Location for Weather Alerts",
+        "title": "Alert coverage",
         "data": {
-          "latitude": "Latitude",
-          "longitude": "Longitude"
-        }
+          "coverage": "Alert coverage"
+        },
+        "description": "Private mode finds Home’s county or marine zone locally. NWS receives area codes. NWS matching sends Home’s coordinates to NWS."
       },
       "zone": {
         "title": "Select Zone and County",
@@ -22,11 +22,14 @@
           "update_interval": "Sensor Update Interval (seconds)",
           "api_timeout": "API Request Timeout (seconds)",
           "deduplicate_alerts_by_id": "Remove duplicate alerts with identical NWS alert IDs (recommended)",
-          "deduplicate_alerts": "Remove duplicate alerts with identical descriptions (not recommended)",
-          "use_home_location": "Only show alerts for the Home location"
-        },
-        "data_description": {
-          "use_home_location": "Send the current Home coordinates to the National Weather Service each update. Leave off to monitor all configured zones and counties."
+          "deduplicate_alerts": "Remove duplicate alerts with identical descriptions (not recommended)"
+        }
+      },
+      "location": {
+        "title": "Location for Weather Alerts",
+        "data": {
+          "latitude": "Latitude",
+          "longitude": "Longitude"
         }
       }
     },
@@ -46,12 +49,11 @@
   "options": {
     "step": {
       "init": {
-        "title": "Edit Weather Alerts Settings",
+        "title": "Alert coverage",
         "data": {
-          "zone": "Zone Code (e.g., WIZ038)",
-          "county": "County Code (optional, e.g., WIC087)",
-          "marine_zones": "Marine Zones (optional, comma separated, e.g., LMZ043,LMZ080)"
-        }
+          "coverage": "Alert coverage"
+        },
+        "description": "Private mode finds Home’s county or marine zone locally. NWS receives area codes. NWS matching sends Home’s coordinates to NWS."
       },
       "update_options": {
         "title": "Sensor Update Settings",
@@ -59,11 +61,7 @@
           "update_interval": "Sensor Update Interval (seconds)",
           "api_timeout": "API Request Timeout (seconds)",
           "deduplicate_alerts_by_id": "Remove duplicate alerts with identical NWS alert IDs (recommended)",
-          "deduplicate_alerts": "Remove duplicate alerts with identical descriptions (not recommended)",
-          "use_home_location": "Only show alerts for the Home location"
-        },
-        "data_description": {
-          "use_home_location": "Send the current Home coordinates to the National Weather Service each update. Leave off to monitor all configured zones and counties."
+          "deduplicate_alerts": "Remove duplicate alerts with identical descriptions (not recommended)"
         }
       },
       "icon_config": {
@@ -72,6 +70,14 @@
           "default_icon": "Default Icon",
           "new_event_type": "New Event Type",
           "new_icon_def": "New Icon Definition"
+        }
+      },
+      "zone": {
+        "title": "Edit Weather Alerts Settings",
+        "data": {
+          "zone": "Zone Code (e.g., WIZ038)",
+          "county": "County Code (optional, e.g., WIC087)",
+          "marine_zones": "Marine Zones (optional, comma separated, e.g., LMZ043,LMZ080)"
         }
       }
     },
@@ -84,6 +90,15 @@
       "invalid_api_timeout_buffer": "API timeout must be at least 5 seconds less than the update interval.",
       "api_outage": "Could not reach the National Weather Service API. Please try again.",
       "unknown_error": "An unknown error has occurred."
+    }
+  },
+  "selector": {
+    "coverage": {
+      "options": {
+        "zones": "All alerts for configured areas",
+        "home": "Follow Home — NWS matches",
+        "private": "Follow Home — match privately on this device"
+      }
     }
   }
 }

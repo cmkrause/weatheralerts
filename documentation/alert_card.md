@@ -195,11 +195,15 @@ For Home Assistant storage-mode dashboards, Weather Alerts attempts to add the c
 If the card does not appear after installation, restart Home Assistant and check **Settings -> Dashboards -> Resources** for:
 
 ```yaml
-url: /weatheralerts_static/weatheralerts-alert-card.js?v=2026.5.0
+url: /weatheralerts_static/weatheralerts-alert-card.js?v=2026.11.1b1
 type: module
 ```
 
 YAML-mode dashboards still require the resource to be added manually in YAML.
+
+## View an affected area
+
+Select **View affected area** on an active alert to open its map in any coverage mode. Drag to pan, use the zoom buttons, or choose **Fit area** to return to the whole alert. For a multi-zone advisory, the map joins adjacent zones and shows how many were available if coverage is incomplete. [Private coverage and alert maps](local_geometry.md)
 
 ---
 

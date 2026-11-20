@@ -12,6 +12,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     CONF_API_TIMEOUT,
     CONF_COUNTY,
+    CONF_COVERAGE,
     CONF_ENTITY_NAME,
     CONF_MARINE_ZONES,
     CONF_NAME,
@@ -89,6 +90,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # multiple WeatherAlerts config entries.
     await async_register_frontend(hass)
 
+    from .area_api import register_area_api
+    register_area_api(hass)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     hass.data.setdefault(DOMAIN, {})
@@ -155,6 +158,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     }
     if name:
         new_data[CONF_NAME] = name
+    if CONF_COVERAGE in entry.options or CONF_COVERAGE in entry.data:
+        new_data[CONF_COVERAGE] = entry.options.get(CONF_COVERAGE, entry.data.get(CONF_COVERAGE))
     if CONF_USE_HOME in entry.options or CONF_USE_HOME in entry.data:
         new_data[CONF_USE_HOME] = entry.options.get(
             CONF_USE_HOME, entry.data.get(CONF_USE_HOME, False)

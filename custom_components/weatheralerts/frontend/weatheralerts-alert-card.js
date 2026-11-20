@@ -1,7 +1,19 @@
+import "./weatheralerts-area-map.js?v=1";
+
 class WeatherAlertsAlertCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    this.shadowRoot.addEventListener("click", (event) => {
+      const button = event.target.closest?.("button[data-area-id]");
+      if (!button) return;
+      const alert = this._getAlerts().find(item => item.id === button.dataset.areaId);
+      if (!alert) return;
+      this._areaDialog?.remove();
+      this._areaDialog = document.createElement("weatheralerts-area-map");
+      document.body.append(this._areaDialog);
+      this._areaDialog.open(this._hass, this._config.entity, alert);
+    });
     this._config = {};
     this._hass = null;
     this._index = 0;
@@ -111,6 +123,7 @@ class WeatherAlertsAlertCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._areaDialog?.remove();
     this._clearTimer();
     this._clearTickerFrame();
   }
@@ -706,6 +719,7 @@ class WeatherAlertsAlertCard extends HTMLElement {
           <div class="alert-text">
             <div class="primary">${this._escape(text)}</div>
             ${summaryBlock}
+            ${this._hasValue(alert.id) ? `<button class="area-link" data-area-id="${this._escape(alert.id)}">View affected area</button>` : ""}
           </div>
         </div>
         ${fullBlock}
@@ -930,6 +944,8 @@ class WeatherAlertsAlertCard extends HTMLElement {
           gap: var(--wa-gap);
           width: max-content;
         }
+        .area-link { font: inherit; font-size: .8em; color: inherit; text-decoration: underline;
+          background: transparent; border: 0; padding: 2px 0; cursor: pointer; }
         .ticker-item {
           flex: 0 0 auto;
           min-width: max-content;

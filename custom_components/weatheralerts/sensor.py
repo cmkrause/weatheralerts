@@ -20,6 +20,7 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 from homeassistant.util import dt as dt_util
+from shapely.geometry import Point
 
 from .const import (
     ALERTS_API,
@@ -33,7 +34,6 @@ from .const import (
     CONF_MARINE_ZONES,
     CONF_NAME,
     CONF_UPDATE_INTERVAL,
-    CONF_USE_HOME,
     CONF_ZONE,
     CONF_ZONE_NAME,
     DEFAULT_API_TIMEOUT,
@@ -44,8 +44,13 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     HEADERS,
+    MODE_HOME,
+    MODE_PRIVATE,
+    MODE_ZONES,
     POINT_ALERTS_API,
+    coverage,
 )
+from .geometry import Area, geometry_service
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -185,6 +190,12 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
         self.feedid = feedid
         self._retry_at = 0.0
         self._last_point = None
+        self.geometry = geometry_service(hass, session)
+        self.areas = {}
+        self._maps = {}
+        self._map_lock = asyncio.Lock()
+        self._feed_cache = None
+        self._matches = {}
         self._last_good_data = None
         self._last_error = []
         self._alert_tracking_list = []
@@ -195,7 +206,8 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
     def _query_point(self):
         """Read the current target. None selects the configured zone feed."""
         entry = self.config_entry
-        if not entry.options.get(CONF_USE_HOME, entry.data.get(CONF_USE_HOME, False)):
+        mode = coverage({**entry.data, **entry.options})
+        if mode == MODE_ZONES:
             return None
         home = self.hass.states.get("zone.home")
         if home and home.state not in ("unknown", "unavailable"):
@@ -204,7 +216,8 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
                 lon = float(home.attributes["longitude"])
                 if -90 <= lat <= 90 and -180 <= lon <= 180:
                     # NWS PointString uses decimal notation, including near zero.
-                    return f"{Decimal(str(lat)):f},{Decimal(str(lon)):f}"
+                    point = f"{Decimal(str(lat)):f},{Decimal(str(lon)):f}"
+                    return "private/" + point if mode == MODE_PRIVATE else point
             except (KeyError, ValueError, TypeError, OverflowError):
                 pass
         raise UpdateFailed("Home location is unavailable")
@@ -268,6 +281,64 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
             "alert_tracking": tracking,
         }
 
+    async def _local_feed(self, scope, target, timeout):
+        now = self.hass.loop.time()
+        if self._feed_cache:
+            previous, expires, codes = self._feed_cache
+            if previous == scope and now < expires:
+                return codes
+        async with asyncio.timeout(timeout):
+            codes = await self.geometry.discover(target, timeout)
+        self._feed_cache = (scope, now + 3600, codes)
+        return codes
+
+    async def _filter_local(self, features, scope, target, timeout):
+        retained = []
+        decisions = {}
+        unknown = 0
+        deadline = self.hass.loop.time() + timeout
+        for feature in features:
+            area = Area.from_feature(feature)
+            key = feature["properties"].get("id")
+            cached = self._matches.get(key)
+            now = self.hass.loop.time()
+            if cached and cached[:2] == (scope, area) and now < cached[2]:
+                decision = cached[3]
+                decisions[key] = cached
+            else:
+                decision = None
+                if now < deadline:
+                    try:
+                        async with asyncio.timeout_at(deadline):
+                            decision = await self.geometry.applies(area, target, timeout)
+                    except TimeoutError:
+                        pass
+                if key and decision is not None:
+                    decisions[key] = (scope, area, now + 3600, decision)
+            if decision is not False:
+                retained.append(feature)
+            if decision is None:
+                unknown += 1
+        self._matches = decisions
+        return retained, unknown
+
+    async def map_area(self, alert_id):
+        async with self._map_lock:
+            area = self.areas[alert_id]
+            cached = self._maps.get(alert_id)
+            if cached and cached[0] == area and self.hass.loop.time() < cached[1]:
+                return cached[2]
+            settings = {**self.config_entry.data, **self.config_entry.options}
+            timeout = settings.get(CONF_API_TIMEOUT, DEFAULT_API_TIMEOUT)
+            result = await self.geometry.footprint(area, timeout)
+            if self.areas.get(alert_id) != area:
+                raise KeyError(alert_id)
+            if result["geometry"] and result["resolved"] == result["total"]:
+                if len(self._maps) >= 4:
+                    self._maps.pop(next(iter(self._maps)))
+                self._maps[alert_id] = (area, self.hass.loop.time()+3600, result)
+            return result
+
     async def _async_update_data(self):
         entry = self.config_entry
         settings = {**entry.data, **entry.options}
@@ -279,13 +350,20 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
             CONF_DEDUPLICATE_ALERTS_BY_ID, DEFAULT_DEDUPLICATE_ALERTS_BY_ID
         )
         point = self._query_point()
-        url = POINT_ALERTS_API if point is not None else ALERTS_API.format(self.feedid)
-        params = {"point": point} if point is not None else None
+        mode = coverage(settings)
+        feed = self.feedid
+        target = None
+        params = {"point": point} if mode == MODE_HOME else None
         if self.hass.loop.time() < self._retry_at:
             return self._fallback(
                 point, "http_error", 429, "Waiting for NWS Retry-After"
             )
         try:
+            if mode == MODE_PRIVATE:
+                lat, lon = map(float, point.removeprefix("private/").split(","))
+                target = Point(lon, lat)
+                feed = await self._local_feed(point, target, timeout_seconds)
+            url = POINT_ALERTS_API if mode == MODE_HOME else ALERTS_API.format(feed)
             async with (
                 asyncio.timeout(timeout_seconds),
                 self.session.get(url, params=params, headers=HEADERS) as response,
@@ -331,7 +409,13 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
         if point != self._query_point():
             raise UpdateFailed("Location changed during the NWS request")
         try:
-            alerts = self._parse_alerts(data["features"], entry.options)
+            features = data["features"]
+            unknown = 0
+            if mode == MODE_PRIVATE:
+                features, unknown = await self._filter_local(features, point, target, timeout_seconds)
+                if point != self._query_point():
+                    raise UpdateFailed("Location changed during local matching")
+            alerts = self._parse_alerts(features, entry.options, feed)
             if deduplicate_alerts_by_id:
                 alerts = _deduplicate_alerts_by_id(alerts)
             if deduplicate_alerts:
@@ -349,6 +433,10 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
             alerts, self._alert_tracking_list, same_scope=point == self._last_point
         )
         self._last_point = point
+        ids = {alert["id"] for alert in alerts}
+        self.areas = {f["properties"]["id"]: Area.from_feature(f) for f in features
+                      if f["properties"].get("id") in ids and f["properties"].get("id")}
+        self._maps = {k:v for k,v in self._maps.items() if k in self.areas and self.areas[k] == v[0]}
 
         # Build success + last failure error tracking
         current_entry = {
@@ -369,18 +457,21 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
             "count": len(alerts),
             "alert_stats": alert_stats,
             "integration": "weatheralerts",
-            "zone": self.feedid,
+            "zone": feed,
             "alert_tracking": self._alert_tracking_list,
             "error": update_error,
         }
         if point is not None:
-            result["location_mode"] = "home"
+            result["location_mode"] = mode
+        if mode == MODE_PRIVATE:
+            result["monitored_codes"] = feed
+            result["unresolved_alerts"] = unknown
         self._last_good_data = dict(result)
         self._last_error = update_error
         _LOGGER.debug("weatheralerts: Returning update data: count=%d", len(alerts))
         return result
 
-    def _parse_alerts(self, features, entry_options):
+    def _parse_alerts(self, features, entry_options, feed):
         alerts = []
         for feature in features:
             props = feature.get("properties", {})
@@ -422,7 +513,7 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
                 "sender": props.get("sender", "null"),
                 "senderName": props.get("senderName", "null"),
                 "id": props.get("id", "null"),
-                "zoneid": self.feedid,
+                "zoneid": feed,
             }
             alert["icon"] = _get_icon_for_event(event_value, entry_options)
             alerts.append(alert)
@@ -587,6 +678,8 @@ class WeatherAlertsSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
     @property
     def unique_id(self):
+        if self.coordinator.config_entry.unique_id == "weatheralerts_home":
+            return "weatheralerts_home"
         uid = f"weatheralerts_{self._feedid.replace(',', '').lower()}"
         _LOGGER.debug("weatheralerts: WeatherAlertsSensor unique_id: %s", uid)
         return uid
@@ -618,10 +711,10 @@ class WeatherAlertsSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
                 or None
             )
             return {
-                **({"location_mode": "home"} if self.coordinator.data.get("location_mode") else {}),
+                **{k: self.coordinator.data[k] for k in ("location_mode", "monitored_codes", "unresolved_alerts") if k in self.coordinator.data},
                 "integration": self.coordinator.data["integration"],
                 "zone": self.coordinator.data["zone"],
-                "zone_name": zone_name,
+                "zone_name": None if self.coordinator.data.get("location_mode") == MODE_PRIVATE else zone_name,
                 "alert_stats": self.coordinator.data.get("alert_stats", {}),
                 "alerts": self.coordinator.data["alerts"],
                 "alert_tracking": self.coordinator.data.get("alert_tracking", []),
@@ -637,12 +730,12 @@ async def async_setup_entry(hass, entry, add_entities):
     marine_zones = entry.options.get(CONF_MARINE_ZONES, entry.data.get(CONF_MARINE_ZONES, ""))
     conf_name = entry.data.get(CONF_NAME, "NWS Weather Alerts")
     entity_name = entry.data.get(CONF_ENTITY_NAME)
-    parts = [zone]
+    parts = [zone] if zone else []
     if county:
         parts.append(county)
     if marine_zones:
         parts += [z.strip() for z in marine_zones.split(",") if z.strip()]
-    feedid = ",".join(parts)
+    feedid = ",".join(parts) or "home"
     if not entity_name:
         entity_name = f"weatheralerts_{_clean_for_entity_id(feedid)}"
         _LOGGER.debug("weatheralerts: entity_name missing in setup_entry! Using fallback %s", entity_name)
@@ -657,6 +750,7 @@ async def async_setup_entry(hass, entry, add_entities):
         hass, session, feedid, entry, update_interval=update_interval
     )
     await coordinator.async_config_entry_first_refresh()
+    entry.runtime_data = coordinator
     _LOGGER.debug("weatheralerts: async_setup_entry (sensor.py): finished first refresh")
     add_entities([WeatherAlertsSensor(coordinator, entity_name, feedid)])
     _LOGGER.info("weatheralerts: async_setup_entry (sensor.py): sensor entity added (%s)", entity_name)

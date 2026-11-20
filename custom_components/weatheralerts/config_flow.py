@@ -10,10 +10,12 @@ from aiohttp import ClientError
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig
 
 from .const import (
     CONF_API_TIMEOUT,
     CONF_COUNTY,
+    CONF_COVERAGE,
     CONF_DEDUPLICATE_ALERTS,
     CONF_DEDUPLICATE_ALERTS_BY_ID,
     CONF_DEFAULT_ICON,
@@ -41,10 +43,14 @@ from .const import (
     MAX_UPDATE_INTERVAL,
     MIN_API_TIMEOUT,
     MIN_UPDATE_INTERVAL,
+    MODE_HOME,
+    MODE_PRIVATE,
+    MODE_ZONES,
     NWS_CODE_REGEX,
     POINTS_API,
     TIMEOUT_BUFFER,
     ZONE_API,
+    coverage,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -126,12 +132,21 @@ async def _validate_zone_api(hass, zone, county, marine_zones, errors):
     return True
 
 
+def _coverage_form(default):
+    return vol.Schema({
+        vol.Required(CONF_COVERAGE, default=default): SelectSelector(
+            SelectSelectorConfig(options=[MODE_ZONES, MODE_HOME, MODE_PRIVATE], translation_key="coverage")
+        ),
+    })
+
+
 class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Weather Alerts."""
 
     VERSION = 2
 
     def __init__(self):
+        self._coverage = MODE_ZONES
         self._lat = None
         self._lon = None
         self._parsed_zone = None
@@ -141,6 +156,15 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._marine = None
 
     async def async_step_user(self, user_input=None):
+        if user_input is None:
+            return self.async_show_form(step_id="user", data_schema=_coverage_form(MODE_ZONES))
+        self._coverage = user_input[CONF_COVERAGE]
+        if self._coverage == MODE_ZONES:
+            return await self.async_step_location()
+        self._zone = self._county = self._marine = ""
+        return await self.async_step_update_options()
+
+    async def async_step_location(self, user_input=None):
         errors = {}
         zone_home = self.hass.states.get("zone.home")
         default_lat = str(zone_home.attributes.get("latitude", "")) if zone_home else ""
@@ -181,7 +205,7 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except (ClientError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
                     errors["base"] = "api_outage"
 
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="location", data_schema=schema, errors=errors)
 
     async def async_step_zone(self, user_input=None):
         errors = {}
@@ -235,7 +259,6 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema({
             vol.Required(CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL): int,
             vol.Required(CONF_API_TIMEOUT, default=DEFAULT_API_TIMEOUT): int,
-            vol.Optional(CONF_USE_HOME, default=False): bool,
             vol.Optional(CONF_DEDUPLICATE_ALERTS_BY_ID, default=DEFAULT_DEDUPLICATE_ALERTS_BY_ID): bool,
             vol.Optional(CONF_DEDUPLICATE_ALERTS, default=DEFAULT_DEDUPLICATE_ALERTS): bool,
        })
@@ -258,10 +281,9 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if self._county:
                     parts.append(self._county)
                 parts += [m.strip() for m in self._marine.split(",") if m.strip()]
-                feed_id = ",".join(parts)
+                feed_id = ",".join(parts) or "home"
 
-                session = async_get_clientsession(self.hass)
-                zone_name = await _get_zone_name(session, self._zone)
+                zone_name = await _get_zone_name(async_get_clientsession(self.hass), self._zone) if self._zone else "Home"
                 if zone_name and len(zone_name) > 40:
                     zone_name = "NWS"
                 clean_name = _clean_for_entity_id(zone_name or self._zone)
@@ -269,6 +291,8 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 entity_name = f"weatheralerts_{clean_name}_{clean_id}"
                 friendly_name = f"{zone_name} ({feed_id})" if zone_name else f"NWS ({feed_id})"
 
+                if not self._zone:
+                    friendly_name, entity_name = "NWS Home", "weatheralerts_home"
                 await self.async_set_unique_id(f"{DOMAIN}_{clean_id}")
                 self._abort_if_unique_id_configured()
 
@@ -279,7 +303,7 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_ENTITY_NAME: entity_name,
                     CONF_UPDATE_INTERVAL: update,
                     CONF_API_TIMEOUT: timeout,
-                    CONF_USE_HOME: user_input.get(CONF_USE_HOME, False),
+                    CONF_COVERAGE: self._coverage,
                     CONF_DEDUPLICATE_ALERTS_BY_ID: deduplicate_by_id,
                     CONF_DEDUPLICATE_ALERTS: deduplicate,
                 }
@@ -354,12 +378,20 @@ class WeatheralertsOptionsFlow(config_entries.OptionsFlow):
         self._entry = entry
         self.updated_options = dict(entry.options)
         for key in [CONF_ZONE, CONF_COUNTY, CONF_MARINE_ZONES, CONF_NAME, CONF_ENTITY_NAME, CONF_ZONE_NAME,
-                    CONF_USE_HOME, CONF_UPDATE_INTERVAL, CONF_API_TIMEOUT,
+                    CONF_COVERAGE, CONF_USE_HOME, CONF_UPDATE_INTERVAL, CONF_API_TIMEOUT,
                     CONF_DEDUPLICATE_ALERTS, CONF_DEDUPLICATE_ALERTS_BY_ID]:
             if key not in self.updated_options and key in entry.data:
                 self.updated_options[key] = entry.data[key]
 
     async def async_step_init(self, user_input=None):
+        if user_input is None:
+            return self.async_show_form(step_id="init", data_schema=_coverage_form(coverage(self.updated_options)))
+        self.updated_options[CONF_COVERAGE] = user_input[CONF_COVERAGE]
+        if user_input[CONF_COVERAGE] == MODE_ZONES:
+            return await self.async_step_zone()
+        return await self.async_step_update_options()
+
+    async def async_step_zone(self, user_input=None):
         errors = {}
         schema = vol.Schema({
             vol.Required(CONF_ZONE): str,
@@ -377,7 +409,7 @@ class WeatheralertsOptionsFlow(config_entries.OptionsFlow):
             valid = await _validate_zone_api(self.hass, zone, county, marine, errors)
             if not valid:
                 # Show the form again with error(s)
-                return self.async_show_form(step_id="init", data_schema=data_schema, errors=errors)
+                return self.async_show_form(step_id="zone", data_schema=data_schema, errors=errors)
 
             parts = [zone] + ([county] if county else []) + [m.strip() for m in marine.split(",") if m.strip()]
             feed_id = ",".join(parts)
@@ -395,10 +427,9 @@ class WeatheralertsOptionsFlow(config_entries.OptionsFlow):
             self.updated_options[CONF_NAME] = friendly_name
             self.updated_options[CONF_ENTITY_NAME] = entity_name
 
-            self.hass.config_entries.async_update_entry(self._entry, title=friendly_name)
             return await self.async_step_update_options()
 
-        return self.async_show_form(step_id="init", data_schema=data_schema, errors=errors)
+        return self.async_show_form(step_id="zone", data_schema=data_schema, errors=errors)
 
     async def async_step_update_options(self, user_input=None):
         errors = {}
@@ -410,7 +441,6 @@ class WeatheralertsOptionsFlow(config_entries.OptionsFlow):
         schema = vol.Schema({
             vol.Required(CONF_UPDATE_INTERVAL, default=update): int,
             vol.Required(CONF_API_TIMEOUT, default=timeout): int,
-            vol.Optional(CONF_USE_HOME, default=self.updated_options.get(CONF_USE_HOME, False)): bool,
             vol.Optional(CONF_DEDUPLICATE_ALERTS_BY_ID, default=dedup_by_id_default): bool,
             vol.Optional(CONF_DEDUPLICATE_ALERTS, default=dedup_default): bool,
         })
@@ -430,7 +460,6 @@ class WeatheralertsOptionsFlow(config_entries.OptionsFlow):
             else:
                 self.updated_options[CONF_UPDATE_INTERVAL] = update
                 self.updated_options[CONF_API_TIMEOUT] = timeout
-                self.updated_options[CONF_USE_HOME] = user_input.get(CONF_USE_HOME, False)
                 self.updated_options[CONF_DEDUPLICATE_ALERTS_BY_ID] = deduplicate_by_id
                 self.updated_options[CONF_DEDUPLICATE_ALERTS] = deduplicate
                 return await self.async_step_icon_config()

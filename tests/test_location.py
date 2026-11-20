@@ -16,9 +16,10 @@ from homeassistant.helpers.restore_state import RestoredExtraData
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from custom_components.weatheralerts import config_flow, sensor
+from custom_components.weatheralerts import _async_update_listener, config_flow, sensor
 from custom_components.weatheralerts.const import (
     ALERTS_API,
+    CONF_COVERAGE,
     CONF_DEDUPLICATE_ALERTS_BY_ID,
     CONF_USE_HOME,
     DOMAIN,
@@ -305,24 +306,30 @@ class LocationTests(IsolatedAsyncioTestCase):
             {}, {CONF_USE_HOME: True, CONF_DEDUPLICATE_ALERTS_BY_ID: True}
         )
         flow = config_flow.WeatheralertsOptionsFlow(self.entry)
-        form = await flow.async_step_update_options()
+        first = await flow.async_step_init()
+        self.assertEqual(first["data_schema"]({})[CONF_COVERAGE], "home")
+        form = await flow.async_step_init({CONF_COVERAGE: "private"})
         fields = form["data_schema"]({})
-        self.assertTrue(fields[CONF_USE_HOME])
         self.assertTrue(fields[CONF_DEDUPLICATE_ALERTS_BY_ID])
-        fields[CONF_USE_HOME] = False
         await flow.async_step_update_options(fields)
         result = await flow.async_step_icon_config({})
-        self.assertFalse(result["data"][CONF_USE_HOME])
+        self.assertEqual(result["data"][CONF_COVERAGE], "private")
         self.assertTrue(result["data"][CONF_DEDUPLICATE_ALERTS_BY_ID])
+        self.setup_coordinator(result["data"], {CONF_USE_HOME: True})
+        self.hass.config_entries.async_reload = AsyncMock()
+        await _async_update_listener(self.hass, self.entry)
+        update = self.hass.config_entries.async_update_entry.call_args.kwargs
+        self.assertEqual(update["data"][CONF_COVERAGE], "private")
+        self.assertEqual(update["options"]["county"], "CAC107")
+        self.hass.config_entries.async_reload.assert_awaited_once_with(self.entry.entry_id)
 
     async def test_setup_option_defaults_off_and_saves_home(self):
         flow = config_flow.WeatheralertsConfigFlow()
         flow.hass = self.hass
-        flow._zone, flow._county, flow._marine = "CAZ312", "CAC107", ""
-        form = await flow.async_step_update_options()
+        first = await flow.async_step_user()
+        self.assertEqual(first["data_schema"]({})[CONF_COVERAGE], "zones")
+        form = await flow.async_step_user({CONF_COVERAGE:"home"})
         fields = form["data_schema"]({})
-        self.assertFalse(fields[CONF_USE_HOME])
-        fields[CONF_USE_HOME] = True
         with (
             patch.object(
                 config_flow, "async_get_clientsession", return_value=self.http
@@ -334,7 +341,7 @@ class LocationTests(IsolatedAsyncioTestCase):
             patch.object(flow, "_abort_if_unique_id_configured"),
         ):
             result = await flow.async_step_update_options(fields)
-        self.assertTrue(result["data"][CONF_USE_HOME])
+        self.assertEqual(result["data"][CONF_COVERAGE], "home")
 
     async def test_outage_preserves_unreadable_expiry(self):
         alert = deepcopy(self.marine)
