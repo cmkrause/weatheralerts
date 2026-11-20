@@ -14,6 +14,7 @@ CONF_ENTITY_NAME = "entity_name"
 CONF_MARINE_ZONES = "marine_zones"
 CONF_UPDATE_INTERVAL = "update_interval"
 CONF_API_TIMEOUT = "api_timeout"
+CONF_USE_HOME = "use_home_location"
 CONF_DEDUPLICATE_ALERTS = "deduplicate_alerts"
 CONF_DEDUPLICATE_ALERTS_BY_ID = "deduplicate_alerts_by_id"
 
@@ -23,6 +24,7 @@ CONF_DEFAULT_ICON = "default_icon"
 
 # API endpoints
 ALERTS_API = "https://api.weather.gov/alerts/active?zone={}"
+POINT_ALERTS_API = "https://api.weather.gov/alerts/active"
 ZONE_API = "https://api.weather.gov/zones/public/{}"
 COUNTY_API = "https://api.weather.gov/zones/county/{}"
 POINTS_API = "https://api.weather.gov/points/{},{}"

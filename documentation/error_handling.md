@@ -15,6 +15,10 @@ If the API becomes unavailable:
 
 ## Error History
 
+In Home location mode, a failed poll can reuse the last successful response for the same point. Check `error[0].type` for `success` before interpreting a count as current. During an outage the cache cannot report newly issued warnings. An alert stays in the cache until 60 minutes after its expiry. An unreadable expiry keeps the alert in the cache.
+
+If Home is unavailable, or a new location has no successful response yet, the sensor is unavailable or Home Assistant retries setup. A valid empty NWS response clears the count. A server error, timeout, or incomplete response cannot clear it. Rate-limited requests respect the NWS retry interval.
+
 The sensor preserves:
 - The most recent successful update
 - The most recent failure

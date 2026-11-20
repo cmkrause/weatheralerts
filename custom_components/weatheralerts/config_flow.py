@@ -1,51 +1,50 @@
 """Config flow for weatheralerts integration."""
 from __future__ import annotations
 
+import asyncio
 import logging
-import voluptuous as vol
-import async_timeout
 import re
-import json
 
+import voluptuous as vol
+from aiohttp import ClientError
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers import translation
 
 from .const import (
-    DOMAIN,
-    CONF_ZONE,
-    CONF_COUNTY,
-    CONF_ZONE_NAME,
-    CONF_NAME,
-    CONF_LATITUDE,
-    CONF_LONGITUDE,
-    CONF_ENTITY_NAME,
-    CONF_MARINE_ZONES,
-    CONF_UPDATE_INTERVAL,
     CONF_API_TIMEOUT,
-    CONF_EVENT_ICONS,
-    CONF_DEFAULT_ICON,
+    CONF_COUNTY,
     CONF_DEDUPLICATE_ALERTS,
     CONF_DEDUPLICATE_ALERTS_BY_ID,
-    ALERTS_API,
-    POINTS_API,
-    ZONE_API,
+    CONF_DEFAULT_ICON,
+    CONF_ENTITY_NAME,
+    CONF_EVENT_ICONS,
+    CONF_LATITUDE,
+    CONF_LONGITUDE,
+    CONF_MARINE_ZONES,
+    CONF_NAME,
+    CONF_UPDATE_INTERVAL,
+    CONF_USE_HOME,
+    CONF_ZONE,
+    CONF_ZONE_NAME,
     COUNTY_API,
-    HEADERS,
-    NWS_CODE_REGEX,
-    MARINE_API,
-    DEFAULT_EVENT_ICONS,
-    DEFAULT_EVENT_ICON,
-    DEFAULT_UPDATE_INTERVAL,
     DEFAULT_API_TIMEOUT,
-    MIN_UPDATE_INTERVAL,
-    MAX_UPDATE_INTERVAL,
-    MIN_API_TIMEOUT,
-    MAX_API_TIMEOUT,
-    TIMEOUT_BUFFER,
     DEFAULT_DEDUPLICATE_ALERTS,
     DEFAULT_DEDUPLICATE_ALERTS_BY_ID,
+    DEFAULT_EVENT_ICON,
+    DEFAULT_EVENT_ICONS,
+    DEFAULT_UPDATE_INTERVAL,
+    DOMAIN,
+    HEADERS,
+    MARINE_API,
+    MAX_API_TIMEOUT,
+    MAX_UPDATE_INTERVAL,
+    MIN_API_TIMEOUT,
+    MIN_UPDATE_INTERVAL,
+    NWS_CODE_REGEX,
+    POINTS_API,
+    TIMEOUT_BUFFER,
+    ZONE_API,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,31 +55,21 @@ def _clean_for_entity_id(text: str) -> str:
         return ""
     return re.sub(r"[^a-z0-9_]", "", re.sub(r"[-\s,]+", "_", text.lower())).strip("_")
 
-async def _get_friendly_error(hass, key):
-    """Return the user-friendly error message for the given key using en.json translation."""
-    # Fetch English translations for your integration
-    translations = await translation.async_get_translations(
-        hass, "en", f"component.{DOMAIN}"
-    )
-    # Path for config flow errors in translations is: config.error.<key>
-    error_path = f"config.error.{key}"
-    return translations.get(error_path, key)
-
 async def _get_zone_name(session, zone):
     """Fetch the human-readable name of a public-zone code (or “” on failure)."""
     try:
-        async with async_timeout.timeout(20):
+        async with asyncio.timeout(20):
             resp = await session.get(ZONE_API.format(zone), headers=HEADERS)
             if resp.status == 200:
                 return (await resp.json()).get("properties", {}).get("name", "")
-    except Exception as ex:
+    except (ClientError, TimeoutError, ValueError, AttributeError) as ex:
         _LOGGER.debug("Failed to fetch zone name: %s", ex)
     return ""
 
 async def _validate_zone_api(hass, zone, county, marine_zones, errors):
     session = async_get_clientsession(hass)
     try:
-        async with async_timeout.timeout(20):
+        async with asyncio.timeout(20):
             resp = await session.get(ZONE_API.format(zone), headers=HEADERS)
             if resp.status == 404:
                 marine_resp = await session.get(MARINE_API.format(zone), headers=HEADERS)
@@ -92,12 +81,12 @@ async def _validate_zone_api(hass, zone, county, marine_zones, errors):
             elif resp.status != 200:
                 errors["base"] = "api_outage"
                 return False
-    except Exception:
+    except (ClientError, TimeoutError):
         errors["base"] = "api_outage"
         return False
     if county:
         try:
-            async with async_timeout.timeout(20):
+            async with asyncio.timeout(20):
                 resp = await session.get(COUNTY_API.format(county), headers=HEADERS)
                 if resp.status == 404:
                     errors["county"] = "invalid_county"
@@ -107,7 +96,7 @@ async def _validate_zone_api(hass, zone, county, marine_zones, errors):
                 elif resp.status != 200:
                     errors["base"] = "api_outage"
                     return False
-        except Exception:
+        except (ClientError, TimeoutError):
             errors["base"] = "api_outage"
             return False
     for m in marine_zones.split(","):
@@ -115,7 +104,7 @@ async def _validate_zone_api(hass, zone, county, marine_zones, errors):
         if not m:
             continue
         try:
-            async with async_timeout.timeout(20):
+            async with asyncio.timeout(20):
                 resp = await session.get(MARINE_API.format(m), headers=HEADERS)
                 if resp.status == 404:
                     # Try as zone if not found as marine
@@ -131,7 +120,7 @@ async def _validate_zone_api(hass, zone, county, marine_zones, errors):
                 elif resp.status != 200:
                     errors["base"] = "api_outage"
                     return False
-        except Exception:
+        except (ClientError, TimeoutError):
             errors["base"] = "api_outage"
             return False
     return True
@@ -173,112 +162,24 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 float(lat)
                 float(lon)
             except ValueError:
-                friendly_error = await _get_friendly_error(self.hass, "invalid_latlon")
-                _LOGGER.error(
-                    "Invalid latitude/longitude: lat=%s, lon=%s - Error: %s",
-                    lat, lon, friendly_error
-                )
                 errors["base"] = "invalid_latlon"
             else:
                 session = async_get_clientsession(self.hass)
-                async with async_timeout.timeout(20):
-                    resp = await session.get(POINTS_API.format(lat, lon), headers=HEADERS)
-                    code = resp.status
-                    # If not 200 and not 404, this is an API outage.
-                    if code != 200 and code != 404:
-                        friendly_error = await _get_friendly_error(self.hass, "api_outage")
-                        _LOGGER.error(
-                            "API outage for lat=%s, lon=%s - HTTP code: %s, error: %s",
-                            lat, lon, code, friendly_error
-                        )
-                        errors["base"] = "api_outage"
-                    # If 404, check JSON
-                    elif code == 404:
-                        try:
-                            data = await resp.json()
-                        except Exception:
-                            data = None
-                        # If no data or no status key in JSON, unknown error
-                        if not data or not isinstance(data, dict) or "status" not in data:
-                            friendly_error = await _get_friendly_error(self.hass, "unknown_error")
-                            _LOGGER.error(
-                                "404 error for lat=%s, lon=%s - HTTP code: 404, error: %s (no valid JSON/status)",
-                                lat, lon, friendly_error
-                            )
-                            errors["base"] = "unknown_error"
+                try:
+                    async with asyncio.timeout(20), session.get(
+                        POINTS_API.format(lat, lon), headers=HEADERS
+                    ) as response:
+                        if response.status == 404:
+                            errors["base"] = "invalid_point"
+                        elif response.status != 200:
+                            errors["base"] = "api_outage"
                         else:
-                            # Continue with rest of JSON logic
-                            status = data.get("status")
-                            err_type = data.get("type", "")
-                            if status == 404 and "InvalidPoint" in err_type:
-                                friendly_error = await _get_friendly_error(self.hass, "invalid_point")
-                                _LOGGER.error(
-                                    "InvalidPoint error for lat=%s, lon=%s - HTTP code: %s, error: %s",
-                                    lat, lon, code, friendly_error
-                                )
-                                errors["base"] = "invalid_point"
-                            elif status is not None and status == 404 and "InvalidPoint" not in err_type:
-                                title = data.get("title", "Unknown Error")
-                                msg = f"{status} - {title} (Out-of-bounds?)"
-                                _LOGGER.error(
-                                    "API error for lat=%s, lon=%s - HTTP code: %s, error: %s",
-                                    lat, lon, code, msg
-                                )
-                                errors["base"] = msg
-                            elif status is not None and status != 404:
-                                title = data.get("title", "Unknown Error")
-                                msg = f"{status} - {title}"
-                                _LOGGER.error(
-                                    "API error for lat=%s, lon=%s - HTTP code: %s, error: %s",
-                                    lat, lon, code, msg
-                                )
-                                errors["base"] = msg
-                            else:
-                                props = data.get("properties", {})
-                                self._parsed_zone = props.get("forecastZone", "").split("/")[-1] or ""
-                                self._parsed_county = props.get("county", "").split("/")[-1] or ""
-                                return await self.async_step_zone(None)
-                    # If 200, normal processing
-                    else:
-                        data = await resp.json()
-                        if isinstance(data, dict):
-                            status = data.get("status")
-                            err_type = data.get("type", "")
-                            if status == 404 and "InvalidPoint" in err_type:
-                                friendly_error = await _get_friendly_error(self.hass, "invalid_point")
-                                _LOGGER.error(
-                                    "InvalidPoint error for lat=%s, lon=%s - HTTP code: %s, error: %s",
-                                    lat, lon, code, friendly_error
-                                )
-                                errors["base"] = "invalid_point"
-                            elif status is not None and status != 404:
-                                title = data.get("title", "Unknown Error")
-                                msg = f"{status} - {title}"
-                                _LOGGER.error(
-                                    "API error for lat=%s, lon=%s - HTTP code: %s, error: %s",
-                                    lat, lon, code, msg
-                                )
-                                errors["base"] = msg
-                            elif status is not None and status == 404 and "InvalidPoint" not in err_type:
-                                title = data.get("title", "Unknown Error")
-                                msg = f"{status} - {title}  (Out-of-bounds?)"
-                                _LOGGER.error(
-                                    "API error for lat=%s, lon=%s - HTTP code: %s, error: %s",
-                                    lat, lon, code, msg
-                                )
-                                errors["base"] = msg
-                            else:
-                                props = data.get("properties", {})
-                                self._parsed_zone = props.get("forecastZone", "").split("/")[-1] or ""
-                                self._parsed_county = props.get("county", "").split("/")[-1] or ""
-                                return await self.async_step_zone(None)
-                        else:
-                            friendly_error = await _get_friendly_error(self.hass, "unknown_error")
-                            _LOGGER.error(
-                                "Unknown error (non-dict API response) for lat=%s, lon=%s - HTTP code: %s, error: %s",
-                                lat, lon, code, friendly_error
-                            )
-                            errors["base"] = "unknown_error"
+                            props = (await response.json())["properties"]
+                            self._parsed_zone = (props.get("forecastZone") or "").rsplit("/", 1)[-1]
+                            self._parsed_county = (props.get("county") or "").rsplit("/", 1)[-1]
+                            return await self.async_step_zone(None)
+                except (ClientError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
+                    errors["base"] = "api_outage"
 
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
@@ -330,22 +231,11 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="zone", data_schema=schema, errors=errors)
 
     async def async_step_update_options(self, user_input=None):
-        from .const import (
-            CONF_UPDATE_INTERVAL,
-            CONF_API_TIMEOUT,
-            DEFAULT_UPDATE_INTERVAL,
-            DEFAULT_API_TIMEOUT,
-            MIN_UPDATE_INTERVAL,
-            MAX_UPDATE_INTERVAL,
-            MIN_API_TIMEOUT,
-            MAX_API_TIMEOUT,
-            TIMEOUT_BUFFER,
-        )
-
         errors = {}
         schema = vol.Schema({
             vol.Required(CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL): int,
             vol.Required(CONF_API_TIMEOUT, default=DEFAULT_API_TIMEOUT): int,
+            vol.Optional(CONF_USE_HOME, default=False): bool,
             vol.Optional(CONF_DEDUPLICATE_ALERTS_BY_ID, default=DEFAULT_DEDUPLICATE_ALERTS_BY_ID): bool,
             vol.Optional(CONF_DEDUPLICATE_ALERTS, default=DEFAULT_DEDUPLICATE_ALERTS): bool,
        })
@@ -389,6 +279,7 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_ENTITY_NAME: entity_name,
                     CONF_UPDATE_INTERVAL: update,
                     CONF_API_TIMEOUT: timeout,
+                    CONF_USE_HOME: user_input.get(CONF_USE_HOME, False),
                     CONF_DEDUPLICATE_ALERTS_BY_ID: deduplicate_by_id,
                     CONF_DEDUPLICATE_ALERTS: deduplicate,
                 }
@@ -419,9 +310,6 @@ class WeatheralertsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             county = f"{state.upper()}C{str(raw_county).zfill(3)}"
         else:
             county = raw_county.upper()
-
-        # No marine zones in YAML
-        marine = ""
 
         # Fetch zone_name (=40 chars, else fallback to 'NWS')
         session = async_get_clientsession(self.hass)
@@ -465,7 +353,9 @@ class WeatheralertsOptionsFlow(config_entries.OptionsFlow):
     def __init__(self, entry):
         self._entry = entry
         self.updated_options = dict(entry.options)
-        for key in [CONF_ZONE, CONF_COUNTY, CONF_MARINE_ZONES, CONF_NAME, CONF_ENTITY_NAME, CONF_ZONE_NAME]:
+        for key in [CONF_ZONE, CONF_COUNTY, CONF_MARINE_ZONES, CONF_NAME, CONF_ENTITY_NAME, CONF_ZONE_NAME,
+                    CONF_USE_HOME, CONF_UPDATE_INTERVAL, CONF_API_TIMEOUT,
+                    CONF_DEDUPLICATE_ALERTS, CONF_DEDUPLICATE_ALERTS_BY_ID]:
             if key not in self.updated_options and key in entry.data:
                 self.updated_options[key] = entry.data[key]
 
@@ -491,7 +381,6 @@ class WeatheralertsOptionsFlow(config_entries.OptionsFlow):
 
             parts = [zone] + ([county] if county else []) + [m.strip() for m in marine.split(",") if m.strip()]
             feed_id = ",".join(parts)
-            session = async_get_clientsession(self.hass)
             session = async_get_clientsession(self.hass)
             zone_name = await _get_zone_name(session, zone)
             if zone_name and len(zone_name) > 40:
@@ -521,6 +410,7 @@ class WeatheralertsOptionsFlow(config_entries.OptionsFlow):
         schema = vol.Schema({
             vol.Required(CONF_UPDATE_INTERVAL, default=update): int,
             vol.Required(CONF_API_TIMEOUT, default=timeout): int,
+            vol.Optional(CONF_USE_HOME, default=self.updated_options.get(CONF_USE_HOME, False)): bool,
             vol.Optional(CONF_DEDUPLICATE_ALERTS_BY_ID, default=dedup_by_id_default): bool,
             vol.Optional(CONF_DEDUPLICATE_ALERTS, default=dedup_default): bool,
         })
@@ -540,6 +430,7 @@ class WeatheralertsOptionsFlow(config_entries.OptionsFlow):
             else:
                 self.updated_options[CONF_UPDATE_INTERVAL] = update
                 self.updated_options[CONF_API_TIMEOUT] = timeout
+                self.updated_options[CONF_USE_HOME] = user_input.get(CONF_USE_HOME, False)
                 self.updated_options[CONF_DEDUPLICATE_ALERTS_BY_ID] = deduplicate_by_id
                 self.updated_options[CONF_DEDUPLICATE_ALERTS] = deduplicate
                 return await self.async_step_icon_config()

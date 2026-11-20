@@ -3,27 +3,27 @@ from __future__ import annotations
 
 import logging
 
+from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers import config_validation as cv
-from homeassistant import config_entries
-
-from .frontend import async_register_frontend
+from homeassistant.helpers.typing import ConfigType
 
 from .const import (
-    DOMAIN,
-    CONF_ZONE,
+    CONF_API_TIMEOUT,
     CONF_COUNTY,
-    CONF_ZONE_NAME,
-    CONF_NAME,
     CONF_ENTITY_NAME,
     CONF_MARINE_ZONES,
+    CONF_NAME,
     CONF_UPDATE_INTERVAL,
-    CONF_API_TIMEOUT,
-    DEFAULT_UPDATE_INTERVAL,
+    CONF_USE_HOME,
+    CONF_ZONE,
+    CONF_ZONE_NAME,
     DEFAULT_API_TIMEOUT,
+    DEFAULT_UPDATE_INTERVAL,
+    DOMAIN,
 )
+from .frontend import async_register_frontend
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     title = name or f"NWS {feed_id}"
 
     # Build the new static data dict
-    new_data: dict[str, str] = {
+    new_data: dict[str, str | int | bool] = {
         CONF_ZONE: zone,
         CONF_COUNTY: county,
         CONF_MARINE_ZONES: marine_zones,
@@ -155,6 +155,10 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     }
     if name:
         new_data[CONF_NAME] = name
+    if CONF_USE_HOME in entry.options or CONF_USE_HOME in entry.data:
+        new_data[CONF_USE_HOME] = entry.options.get(
+            CONF_USE_HOME, entry.data.get(CONF_USE_HOME, False)
+        )
     if entity_name:
         new_data[CONF_ENTITY_NAME] = entity_name
 

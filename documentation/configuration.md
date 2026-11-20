@@ -38,6 +38,10 @@ Multiple zone types may be combined into a single sensor.
 
 ### Step 3: Sensor Update Settings
 
+**Only show alerts for the Home location** is off by default. Enable it during setup or under **Settings → Devices & services → Weather Alerts → Configure** to monitor the center of `zone.home`. Each poll sends the current Home coordinates to the National Weather Service. Moving Home takes effect on the next poll.
+
+With this option on, NWS selects the alerts for that point, including polygon warnings, county watches, and forecast, fire-weather, or marine zone alerts. Additional zones configured on the entry do not extend the coverage of a point query. The existing sensor keeps its entity ID. Its `zone` and per-alert `zoneid` fields continue to identify the configured feed. The `location_mode` attribute reads `home` when the point feed is in use. Turn the option off to resume monitoring all configured codes.
+
 - Update Interval: 30–600 seconds
 - API Timeout: 10–60 seconds
   Must be at least 5 seconds less than the update interval

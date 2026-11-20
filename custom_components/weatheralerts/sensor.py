@@ -3,43 +3,48 @@ An integration which allows you to get weather alerts from weather.gov.
 For more details about this integration, please refer to the documentation at
 https://github.com/custom-components/weatheralerts
 """
+import asyncio
 import logging
-import async_timeout
 import re
 from datetime import timedelta
+from decimal import Decimal
 
+from aiohttp import ClientError
+from aiohttp.helpers import parse_http_date
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.restore_state import RestoredExtraData, RestoreEntity
 from homeassistant.helpers.update_coordinator import (
-    DataUpdateCoordinator,
     CoordinatorEntity,
+    DataUpdateCoordinator,
     UpdateFailed,
 )
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    DOMAIN,
     ALERTS_API,
-    HEADERS,
-    CONF_ZONE,
+    CONF_API_TIMEOUT,
     CONF_COUNTY,
-    CONF_ZONE_NAME,
-    CONF_NAME,
-    CONF_ENTITY_NAME,
-    CONF_MARINE_ZONES,
-    CONF_EVENT_ICONS,
-    CONF_DEFAULT_ICON,
     CONF_DEDUPLICATE_ALERTS,
     CONF_DEDUPLICATE_ALERTS_BY_ID,
-    DEFAULT_EVENT_ICONS,
-    DEFAULT_EVENT_ICON,
+    CONF_DEFAULT_ICON,
+    CONF_ENTITY_NAME,
+    CONF_EVENT_ICONS,
+    CONF_MARINE_ZONES,
+    CONF_NAME,
     CONF_UPDATE_INTERVAL,
-    CONF_API_TIMEOUT,
-    DEFAULT_UPDATE_INTERVAL,
+    CONF_USE_HOME,
+    CONF_ZONE,
+    CONF_ZONE_NAME,
     DEFAULT_API_TIMEOUT,
     DEFAULT_DEDUPLICATE_ALERTS,
     DEFAULT_DEDUPLICATE_ALERTS_BY_ID,
+    DEFAULT_EVENT_ICON,
+    DEFAULT_EVENT_ICONS,
+    DEFAULT_UPDATE_INTERVAL,
+    DOMAIN,
+    HEADERS,
+    POINT_ALERTS_API,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,7 +62,7 @@ def _get_icon_for_event(event, entry_options=None):
             import json
             try:
                 event_icons = json.loads(event_icons)
-            except Exception:
+            except ValueError:
                 event_icons = None
     if not event_icons or not isinstance(event_icons, dict):
         event_icons = DEFAULT_EVENT_ICONS
@@ -78,7 +83,7 @@ def _compute_active_alert_stats(alerts):
             if not ends_ts:
                 return False
             return (ends_ts - now_ts) > 0
-        except Exception:
+        except (ValueError, TypeError, OverflowError):
             _LOGGER.debug(f"weatheralerts: Could not parse 'expires' for active_alert_stats: {ends_str}")
             return False
 
@@ -138,7 +143,7 @@ def _deduplicate_alerts_by_description(alerts):
         key = _dedup_key(alert.get("description", ""))
         grouped[key].append(alert)
     deduped = []
-    for desc, group in grouped.items():
+    for group in grouped.values():
         if len(group) == 1:
             deduped.append(group[0])
         else:
@@ -168,187 +173,218 @@ def _deduplicate_alerts_by_description(alerts):
 class WeatherAlertsCoordinator(DataUpdateCoordinator):
     """Coordinator for fetching weather alerts and tracking alert_tracking."""
 
-    def __init__(self, hass, session, feedid, config_entry_id, update_interval):
+    def __init__(self, hass, session, feedid, entry, update_interval):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=f"WeatherAlerts ({feedid})",
             update_interval=update_interval,
         )
         self.session = session
         self.feedid = feedid
-        self.config_entry_id = config_entry_id
+        self._retry_at = 0.0
+        self._last_point = None
         self._last_good_data = None
         self._last_error = []
         self._alert_tracking_list = []
-        _LOGGER.info("weatheralerts: WeatherAlertsCoordinator initialized for feedid: %s", feedid)
+        _LOGGER.info(
+            "weatheralerts: WeatherAlertsCoordinator initialized for feedid: %s", feedid
+        )
+
+    def _query_point(self):
+        """Read the current target. None selects the configured zone feed."""
+        entry = self.config_entry
+        if not entry.options.get(CONF_USE_HOME, entry.data.get(CONF_USE_HOME, False)):
+            return None
+        home = self.hass.states.get("zone.home")
+        if home and home.state not in ("unknown", "unavailable"):
+            try:
+                lat = float(home.attributes["latitude"])
+                lon = float(home.attributes["longitude"])
+                if -90 <= lat <= 90 and -180 <= lon <= 180:
+                    # NWS PointString uses decimal notation, including near zero.
+                    return f"{Decimal(str(lat)):f},{Decimal(str(lon)):f}"
+            except (KeyError, ValueError, TypeError, OverflowError):
+                pass
+        raise UpdateFailed("Home location is unavailable")
+
+    def _fallback(self, point, error_type, status, message):
+        if point != self._query_point():
+            raise UpdateFailed("Location changed during the NWS request")
+        error = {
+            "type": error_type,
+            "status": status,
+            "message": message,
+            "timestamp": dt_util.now().isoformat(),
+        }
+        errors = [error] + [e for e in self._last_error if e["type"] == "success"][:1]
+        self._last_error = errors
+        if point != self._last_point or (
+            point is not None and self._last_good_data is None
+        ):
+            # A failed first poll or move is unknown, never an all-clear.
+            delay = self._retry_at - self.hass.loop.time()
+            raise UpdateFailed(
+                message, retry_after=delay if delay > 0 else None
+            ) from None
+        if self._last_good_data is None:
+            return {
+                "alerts": [],
+                "count": 0,
+                "alert_stats": {},
+                "integration": DOMAIN,
+                "zone": self.feedid,
+                "alert_tracking": self._alert_tracking_list,
+                "error": errors,
+            }
+
+        cutoff = dt_util.now() - timedelta(minutes=60)
+        alerts = []
+        for alert in self._last_good_data["alerts"]:
+            expires = alert.get("expires")
+            try:
+                end = dt_util.parse_datetime(expires) if expires else None
+                if end is not None and end <= cutoff:
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                pass  # Keep an alert when its expiry cannot be established.
+            alerts.append(alert)
+        ids = {alert["id"] for alert in alerts}
+        tracking = [
+            t for t in self._alert_tracking_list
+            if t["id"] in ids or (point is not None and t["status"] == "delete")
+        ]
+        if point is not None:
+            # A cached observation must not replay a new-alert notification.
+            tracking = self._track_alerts(alerts, tracking, same_scope=True)
+            self._alert_tracking_list = tracking
+        return {
+            **self._last_good_data,
+            "alerts": alerts,
+            "count": len(alerts),
+            "alert_stats": _compute_active_alert_stats(alerts),
+            "error": errors,
+            "alert_tracking": tracking,
+        }
 
     async def _async_update_data(self):
-        _LOGGER.debug("weatheralerts: _async_update_data called for feedid: %s", self.feedid)
-        update_error = []
-
-        entry = next((e for e in self.hass.config_entries.async_entries(DOMAIN)
-                     if e.entry_id == self.config_entry_id), None)
-        timeout_seconds = entry.options.get(CONF_API_TIMEOUT,
-                            entry.data.get(CONF_API_TIMEOUT, DEFAULT_API_TIMEOUT)) if entry else DEFAULT_API_TIMEOUT
-        deduplicate_alerts = entry.options.get(CONF_DEDUPLICATE_ALERTS, entry.data.get(CONF_DEDUPLICATE_ALERTS, DEFAULT_DEDUPLICATE_ALERTS)) if entry else DEFAULT_DEDUPLICATE_ALERTS
-        deduplicate_alerts_by_id = entry.options.get(CONF_DEDUPLICATE_ALERTS_BY_ID,
-                                   entry.data.get(CONF_DEDUPLICATE_ALERTS_BY_ID, DEFAULT_DEDUPLICATE_ALERTS_BY_ID)) if entry else DEFAULT_DEDUPLICATE_ALERTS_BY_ID
-
+        entry = self.config_entry
+        settings = {**entry.data, **entry.options}
+        timeout_seconds = settings.get(CONF_API_TIMEOUT, DEFAULT_API_TIMEOUT)
+        deduplicate_alerts = settings.get(
+            CONF_DEDUPLICATE_ALERTS, DEFAULT_DEDUPLICATE_ALERTS
+        )
+        deduplicate_alerts_by_id = settings.get(
+            CONF_DEDUPLICATE_ALERTS_BY_ID, DEFAULT_DEDUPLICATE_ALERTS_BY_ID
+        )
+        point = self._query_point()
+        url = POINT_ALERTS_API if point is not None else ALERTS_API.format(self.feedid)
+        params = {"point": point} if point is not None else None
+        if self.hass.loop.time() < self._retry_at:
+            return self._fallback(
+                point, "http_error", 429, "Waiting for NWS Retry-After"
+            )
         try:
-            async with async_timeout.timeout(timeout_seconds):
-                alerts_url = ALERTS_API.format(self.feedid)
-                _LOGGER.debug("weatheralerts: Fetching Alerts URL: %s", alerts_url)
-                response = await self.session.get(alerts_url, headers=HEADERS)
-                _LOGGER.debug("weatheralerts: HTTP status code: %s", response.status)
-                if response.status != 200:
-                    error_msg = f"Possible API outage (status {response.status})"
-                    current_entry = {
-                        "type": "http_error",
-                        "status": response.status,
-                        "message": error_msg,
-                        "timestamp": dt_util.now().isoformat(),
-                    }
-                    previous_entry = next((e for e in reversed(self._last_error) if e.get("type") == "success"), None)
-                    update_error = [current_entry]
-                    if previous_entry:
-                        update_error.append(previous_entry)
-                    if self._last_good_data:
-                        data = dict(self._last_good_data)
-                        # --- prune stale alerts when falling back to previous data ---
-                        try:
-                            now = dt_util.now()
-                            fallback_delete_buffer = timedelta(minutes=60)
-
-                            alerts = list(data.get("alerts", []))
-                            kept_alerts = []
-                            kept_ids = set()
-
-                            for a in alerts:
-                                exp = a.get("expires")
-                                drop = False
-                                if exp and exp != "null":
-                                    try:
-                                        exp_dt = dt_util.parse_datetime(exp)
-                                        if exp_dt and now >= (exp_dt + fallback_delete_buffer):
-                                            drop = True
-                                    except Exception:
-                                        # If we can't parse, keep it rather than accidentally dropping
-                                        pass
-
-                                if not drop:
-                                    kept_alerts.append(a)
-                                    if a.get("id"):
-                                        kept_ids.add(a["id"])
-
-                            # Replace with pruned alerts, update count + stats
-                            data["alerts"] = kept_alerts
-                            data["count"] = len(kept_alerts)
-                            data["alert_stats"] = _compute_active_alert_stats(kept_alerts)
-
-                            # Drop any alert_tracking rows for removed alerts
-                            tracking = list(data.get("alert_tracking", []))
-                            data["alert_tracking"] = [t for t in tracking if t.get("id") in kept_ids]
-
-                        except Exception as e:
-                            _LOGGER.debug("weatheralerts: prune-on-fallback failed: %s", e)
-                        # --- end prune block ---
-                        data["error"] = update_error
-                        self._last_error = update_error
-                        return data
+            async with (
+                asyncio.timeout(timeout_seconds),
+                self.session.get(url, params=params, headers=HEADERS) as response,
+            ):
+                if response.status == 429:
+                    after = response.headers.get("Retry-After", "")
+                    until = parse_http_date(after)
+                    if until:
+                        delay = (until - dt_util.utcnow()).total_seconds()
                     else:
-                        return {
-                            "alerts": [],
-                            "count": 0,
-                            "alert_stats": {},
-                            "integration": "weatheralerts",
-                            "zone": self.feedid,
-                            "alert_tracking": self._alert_tracking_list,
-                            "error": update_error,
-                        }
+                        delay = (
+                            int(after)
+                            if after.isascii() and after.isdigit() and len(after) < 12
+                            else 0
+                        )
+                    self._retry_at = self.hass.loop.time() + max(
+                        delay, self.update_interval.total_seconds()
+                    )
+                if response.status != 200:
+                    return self._fallback(
+                        point,
+                        "http_error",
+                        response.status,
+                        f"Possible API outage (status {response.status})",
+                    )
                 data = await response.json()
-                _LOGGER.debug("weatheralerts: Fetched data keys: %s", list(data.keys()))
-        except Exception as err:
-            error_msg = f"Update failed: {err}"
-            current_entry = {
-                "type": "exception",
-                "status": "",
-                "message": str(err),
-                "timestamp": dt_util.now().isoformat(),
-            }
-            previous_entry = next((e for e in reversed(self._last_error) if e.get("type") == "success"), None)
-            update_error = [current_entry]
-            if previous_entry:
-                update_error.append(previous_entry)
-            _LOGGER.debug("weatheralerts: Exception in _async_update_data: %s", err)
-            if self._last_good_data:
-                data = dict(self._last_good_data)
-                # --- prune stale alerts when falling back to previous data ---
-                try:
-                    now = dt_util.now()
-                    fallback_delete_buffer = timedelta(minutes=60)
+                if not isinstance(data, dict) or not isinstance(
+                    data.get("features"), list
+                ):
+                    raise TypeError("Invalid NWS alert collection")
+                pagination = data.get("pagination") or {}
+                if not isinstance(pagination, dict) or pagination.get("next") or any(
+                    not isinstance(f, dict) or not isinstance(f.get("properties"), dict)
+                    for f in data["features"]
+                ):
+                    raise ValueError("Incomplete NWS alert collection")
+        except (ClientError, TimeoutError, ValueError, TypeError, OSError) as err:
+            # Client exceptions can include the complete request URL.
+            return self._fallback(
+                point, "exception", "", f"NWS request failed ({type(err).__name__})"
+            )
 
-                    alerts = list(data.get("alerts", []))
-                    kept_alerts = []
-                    kept_ids = set()
+        if point != self._query_point():
+            raise UpdateFailed("Location changed during the NWS request")
+        try:
+            alerts = self._parse_alerts(data["features"], entry.options)
+            if deduplicate_alerts_by_id:
+                alerts = _deduplicate_alerts_by_id(alerts)
+            if deduplicate_alerts:
+                alerts = _deduplicate_alerts_by_description(alerts)
+            alerts.sort(
+                key=lambda x: (x.get("sent") or "", x.get("id") or ""), reverse=True
+            )
+            alert_stats = _compute_active_alert_stats(alerts)
+        except (TypeError, AttributeError, ValueError):
+            return self._fallback(
+                point, "exception", "", "Invalid NWS alert properties"
+            )
 
-                    for a in alerts:
-                        exp = a.get("expires")
-                        drop = False
-                        if exp and exp != "null":
-                            try:
-                                exp_dt = dt_util.parse_datetime(exp)
-                                if exp_dt and now >= (exp_dt + fallback_delete_buffer):
-                                    drop = True
-                            except Exception:
-                                # If we can't parse, keep it rather than accidentally dropping
-                                pass
+        self._alert_tracking_list = self._track_alerts(
+            alerts, self._alert_tracking_list, same_scope=point == self._last_point
+        )
+        self._last_point = point
 
-                        if not drop:
-                            kept_alerts.append(a)
-                            if a.get("id"):
-                                kept_ids.add(a["id"])
+        # Build success + last failure error tracking
+        current_entry = {
+            "type": "success",
+            "status": "OK",
+            "message": "no errors",
+            "timestamp": dt_util.now().isoformat(),
+        }
+        previous_entry = next(
+            (e for e in reversed(self._last_error) if e.get("type") != "success"), None
+        )
+        update_error = [current_entry]
+        if previous_entry:
+            update_error.append(previous_entry)
 
-                    # Replace with pruned alerts, update count + stats
-                    data["alerts"] = kept_alerts
-                    data["count"] = len(kept_alerts)
-                    data["alert_stats"] = _compute_active_alert_stats(kept_alerts)
+        result = {
+            "alerts": alerts,
+            "count": len(alerts),
+            "alert_stats": alert_stats,
+            "integration": "weatheralerts",
+            "zone": self.feedid,
+            "alert_tracking": self._alert_tracking_list,
+            "error": update_error,
+        }
+        if point is not None:
+            result["location_mode"] = "home"
+        self._last_good_data = dict(result)
+        self._last_error = update_error
+        _LOGGER.debug("weatheralerts: Returning update data: count=%d", len(alerts))
+        return result
 
-                    # Drop any alert_tracking rows for removed alerts
-                    tracking = list(data.get("alert_tracking", []))
-                    data["alert_tracking"] = [t for t in tracking if t.get("id") in kept_ids]
-
-                except Exception as e:
-                    _LOGGER.debug("weatheralerts: prune-on-fallback failed: %s", e)
-                # --- end prune block ---
-                data["error"] = update_error
-                self._last_error = update_error
-                return data
-            else:
-                return {
-                    "alerts": [],
-                    "count": 0,
-                    "alert_stats": {},
-                    "integration": "weatheralerts",
-                    "zone": self.feedid,
-                    "alert_tracking": self._alert_tracking_list,
-                    "error": update_error,
-                }
-
-        # Get config entry options
-        entry = None
-        if hasattr(self.hass, "config_entries"):
-            for e in self.hass.config_entries.async_entries(DOMAIN):
-                if e.entry_id == self.config_entry_id:
-                    entry = e
-                    break
-        entry_options = entry.options if entry else None
-
-        # Build alerts list as before
+    def _parse_alerts(self, features, entry_options):
         alerts = []
-        for feature in data.get("features", []):
+        for feature in features:
             props = feature.get("properties", {})
-            props["endsExpires"] = (
+            ends_expires = (
                 props.get("expires", "null")
                 if props.get("ends") is None
                 else props.get("ends", "null")
@@ -369,7 +405,7 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
                 "response": props.get("response", "null"),
                 "sent": props.get("sent", "null"),
                 "severity": props.get("severity", "null"),
-                "title": props.get("headline", "null").split(" by ")[0],
+                "title": (props.get("headline") or "null").split(" by ")[0],
                 "urgency": props.get("urgency", "null"),
                 "NWSheadline": nws_headline,
                 "NWSheadlines": nws_headlines if isinstance(nws_headlines, list) and nws_headlines else ["null"],
@@ -379,7 +415,7 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
                 "effective": props.get("effective", "null"),
                 "expires": props.get("expires", "null"),
                 "onset": props.get("onset", "null"),
-                "endsExpires": props.get("endsExpires", "null"),
+                "endsExpires": ends_expires,
                 "status": props.get("status", "null"),
                 "messageType": props.get("messageType", "null"),
                 "category": props.get("category", "null"),
@@ -392,33 +428,25 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
             alerts.append(alert)
         _LOGGER.debug("weatheralerts: Parsed %d alerts", len(alerts))
 
-        if deduplicate_alerts_by_id:
-            alerts = _deduplicate_alerts_by_id(alerts)
-            _LOGGER.debug("weatheralerts: %d alerts after NWS alert ID deduplication", len(alerts))
+        return alerts
 
-        if deduplicate_alerts:
-            alerts = _deduplicate_alerts_by_description(alerts)
-            _LOGGER.debug("weatheralerts: %d alerts after description deduplication", len(alerts))
-
-        alerts.sort(key=lambda x: (x.get("sent", ""), x.get("id", "")), reverse=True)
-        alert_stats = _compute_active_alert_stats(alerts)
-
-        # ------- alert_tracking TRACKING LOGIC -------
+    @staticmethod
+    def _track_alerts(alerts, previous, *, same_scope):
+        """Compare IDs; disappearance only means deletion within the same feed."""
         now = dt_util.now()
 
         # 1. Build lookups for current and previous
         current_alerts_by_id = {a["id"]: a for a in alerts if a.get("id")}
-        prev_alerts_by_id = {e["id"]: e for e in self._alert_tracking_list if "id" in e}
+        prev_alerts_by_id = {e["id"]: e for e in previous if "id" in e}
 
         # 2. Build new alert_tracking list
         new_alert_tracking_list = []
-        is_initial = not self._alert_tracking_list
         for alert_tracking, alert in current_alerts_by_id.items():
             expires = alert.get("expires")
             sent = alert.get("sent")
             prev_entry = prev_alerts_by_id.get(alert_tracking)
 
-            if is_initial or prev_entry is None:
+            if prev_entry is None:
                 status = "new"
                 status_ts = now.isoformat()
             else:
@@ -440,7 +468,7 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
 
         # 3. Mark as deleted if missing from live alerts
         for alert_tracking, prev_entry in prev_alerts_by_id.items():
-            if alert_tracking not in current_alerts_by_id:
+            if same_scope and alert_tracking not in current_alerts_by_id:
                 prev_status = prev_entry.get("status")
                 # preserve timestamp if already 'delete', else bump to now
                 status_ts = (
@@ -467,7 +495,7 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
             if status_ts:
                 try:
                     status_ts_dt = dt_util.parse_datetime(status_ts)
-                except Exception:
+                except (ValueError, TypeError, OverflowError):
                     status_ts_dt = None
 
             drop_for_delete_age = (
@@ -483,36 +511,20 @@ class WeatherAlertsCoordinator(DataUpdateCoordinator):
             cleaned_alert_tracking_list.append(entry)
 
         cleaned_alert_tracking_list.sort(
-            key=lambda x: (x.get("sent", ""), x.get("id", "")), reverse=True
+            key=lambda x: (x.get("sent") or "", x.get("id") or ""), reverse=True
         )
-        self._alert_tracking_list = cleaned_alert_tracking_list
-        # ------- END alert_tracking TRACKING LOGIC -------
+        return cleaned_alert_tracking_list
 
-        # Build success + last failure error tracking
-        current_entry = {
-            "type": "success",
-            "status": "OK",
-            "message": "no errors",
-            "timestamp": dt_util.now().isoformat(),
-        }
-        previous_entry = next((e for e in reversed(self._last_error) if e.get("type") != "success"), None)
-        update_error = [current_entry]
-        if previous_entry:
-            update_error.append(previous_entry)
-
-        result = {
-            "alerts": alerts,
-            "count": len(alerts),
-            "alert_stats": alert_stats,
-            "integration": "weatheralerts",
-            "zone": self.feedid,
-            "alert_tracking": self._alert_tracking_list,
-            "error": update_error,
-        }
-        self._last_good_data = dict(result)
-        self._last_error = update_error
-        _LOGGER.debug("weatheralerts: Returning update data: count=%d", len(alerts))
-        return result
+    def restore_tracking(self, previous, previous_point):
+        """Reconcile saved IDs with the successful first refresh before publishing."""
+        if self._last_good_data is None:
+            if previous_point is None:
+                self._alert_tracking_list = previous
+            return
+        tracking = self._track_alerts(self.data["alerts"], previous,
+                                      same_scope=previous_point == self._last_point)
+        self.data["alert_tracking"] = self._last_good_data["alert_tracking"] = tracking
+        self._alert_tracking_list = tracking
 
 # ------------ RestoreEntity ADDED! ------------
 class WeatherAlertsSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
@@ -543,21 +555,25 @@ class WeatherAlertsSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
         if last_state is not None:
             restored_alert_tracking = last_state.attributes.get("alert_tracking")
             if restored_alert_tracking and isinstance(self.coordinator, WeatherAlertsCoordinator):
-                self.coordinator._alert_tracking_list = restored_alert_tracking
+                extra = await self.async_get_last_extra_data()
+                previous_point = extra.as_dict().get("home_point") if extra else None
+                self.coordinator.restore_tracking(restored_alert_tracking, previous_point)
                 _LOGGER.info("weatheralerts: Restored alert_tracking list from last state")
         # ----------------------------------------------------------
+
+    @property
+    def extra_restore_state_data(self):
+        # HA-private restore data, never exposed as a state attribute.
+        if self.coordinator._last_point is not None:
+            return RestoredExtraData({"home_point": self.coordinator._last_point})
+        return None
 
     async def _config_entry_updated(self, hass, entry):
         self._update_friendly_name()
         self.async_write_ha_state()
 
     def _get_config_entry(self):
-        if hasattr(self.coordinator, "config_entry_id"):
-            for entry in self.hass.config_entries.async_entries(DOMAIN):
-                if entry.entry_id == self.coordinator.config_entry_id:
-                    return entry
-        entries = self.hass.config_entries.async_entries(DOMAIN)
-        return entries[0] if entries else None
+        return self.coordinator.config_entry
 
     def _update_friendly_name(self):
         entry = self._get_config_entry()
@@ -602,6 +618,7 @@ class WeatherAlertsSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
                 or None
             )
             return {
+                **({"location_mode": "home"} if self.coordinator.data.get("location_mode") else {}),
                 "integration": self.coordinator.data["integration"],
                 "zone": self.coordinator.data["zone"],
                 "zone_name": zone_name,
@@ -637,11 +654,11 @@ async def async_setup_entry(hass, entry, add_entities):
     update_interval_sec = entry.options.get(CONF_UPDATE_INTERVAL, entry.data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL))
     update_interval = timedelta(seconds=update_interval_sec)
     coordinator = WeatherAlertsCoordinator(
-        hass, session, feedid, entry.entry_id, update_interval=update_interval
+        hass, session, feedid, entry, update_interval=update_interval
     )
     await coordinator.async_config_entry_first_refresh()
     _LOGGER.debug("weatheralerts: async_setup_entry (sensor.py): finished first refresh")
-    add_entities([WeatherAlertsSensor(coordinator, entity_name, feedid)], True)
+    add_entities([WeatherAlertsSensor(coordinator, entity_name, feedid)])
     _LOGGER.info("weatheralerts: async_setup_entry (sensor.py): sensor entity added (%s)", entity_name)
 
 async def async_setup_platform(hass, config, add_entities, discovery_info=None):

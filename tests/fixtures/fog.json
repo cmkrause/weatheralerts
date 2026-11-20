@@ -1,0 +1,53 @@
+{
+  "type": "Feature",
+  "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.376ce225069ebe05c30f487f9288091d906bfd7a.001.1",
+  "geometry": null,
+  "properties": {
+    "id": "urn:oid:2.49.0.1.840.0.376ce225069ebe05c30f487f9288091d906bfd7a.001.1",
+    "event": "Dense Fog Advisory",
+    "areaDesc": "Los Banos - Dos Palos; Merced - Madera - Mendota; Planada - Le Grand - Snelling; West Side of Fresno and Kings Counties; Caruthers - San Joaquin - Selma; Fresno-Clovis; Buttonwillow - Lost Hills - I5; Delano-Wasco-Shafter; Hanford - Corcoran - Lemoore; Visalia - Porterville - Reedley; Bakersfield; Southeast San Joaquin Valley",
+    "sent": "2026-11-20T12:04:00-08:00",
+    "expires": "2026-11-20T20:15:00-08:00",
+    "headline": "Dense Fog Advisory issued November 20 at 12:04PM PST until November 21 at 8:00AM PST by NWS Hanford CA",
+    "description": "* WHAT...Visibility one quarter mile or less in dense fog.\n\n* WHERE...The San Joaquin Valley.\n\n* WHEN...From midnight tonight to 10 AM PST Saturday.\n\n* IMPACTS...Low visibility could make driving conditions hazardous.\n\n* ADDITIONAL DETAILS...Highways affected include interstate 5,\nhighways 99, 43, 41, 198, 152, 46, and 58.",
+    "affectedZones": [
+      "https://api.weather.gov/zones/forecast/CAZ301",
+      "https://api.weather.gov/zones/forecast/CAZ302",
+      "https://api.weather.gov/zones/forecast/CAZ303",
+      "https://api.weather.gov/zones/forecast/CAZ305",
+      "https://api.weather.gov/zones/forecast/CAZ306",
+      "https://api.weather.gov/zones/forecast/CAZ307",
+      "https://api.weather.gov/zones/forecast/CAZ309",
+      "https://api.weather.gov/zones/forecast/CAZ310",
+      "https://api.weather.gov/zones/forecast/CAZ311",
+      "https://api.weather.gov/zones/forecast/CAZ312",
+      "https://api.weather.gov/zones/forecast/CAZ314",
+      "https://api.weather.gov/zones/forecast/CAZ315"
+    ],
+    "geocode": {
+      "SAME": [
+        "006019",
+        "006047",
+        "006039",
+        "006043",
+        "006031",
+        "006107",
+        "006029"
+      ],
+      "UGC": [
+        "CAZ301",
+        "CAZ302",
+        "CAZ303",
+        "CAZ305",
+        "CAZ306",
+        "CAZ307",
+        "CAZ309",
+        "CAZ310",
+        "CAZ311",
+        "CAZ312",
+        "CAZ314",
+        "CAZ315"
+      ]
+    }
+  }
+}

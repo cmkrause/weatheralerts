@@ -1,0 +1,79 @@
+{
+  "type": "Feature",
+  "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.caa0865b81d42d9da519b2e28dffe5fc9a758008.001.1",
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+      [
+        [
+          -66.83,
+          18.53
+        ],
+        [
+          -66.84,
+          18.49
+        ],
+        [
+          -66.87,
+          18.49
+        ],
+        [
+          -66.9,
+          18.48
+        ],
+        [
+          -66.98,
+          18.49
+        ],
+        [
+          -67.02,
+          18.51
+        ],
+        [
+          -67.12,
+          18.51
+        ],
+        [
+          -67.15,
+          18.5
+        ],
+        [
+          -67.29,
+          18.51
+        ],
+        [
+          -67.07,
+          18.68
+        ],
+        [
+          -66.94,
+          18.67
+        ],
+        [
+          -66.83,
+          18.53
+        ]
+      ]
+    ]
+  },
+  "properties": {
+    "id": "urn:oid:2.49.0.1.840.0.caa0865b81d42d9da519b2e28dffe5fc9a758008.001.1",
+    "event": "Special Marine Warning",
+    "areaDesc": "Coastal Waters of Northern Puerto Rico out 10 NM",
+    "sent": "2026-11-20T17:48:00-04:00",
+    "expires": "2026-11-20T18:45:00-04:00",
+    "headline": "Special Marine Warning issued November 20 at 5:48PM AST until November 20 at 6:45PM AST by NWS San Juan PR",
+    "description": "SMWSJU\n\nThe National Weather Service in San Juan has issued a\n\n* Special Marine Warning for...\nCoastal Waters of Northern Puerto Rico out 10 NM...\n\n* Until 645 PM AST.\n\n* At 548 PM AST, A severe thunderstorm capable of producing\nwaterspouts was located over the coastal waters of Isabela, and is\nslowly drifting northwestward.\n\nHAZARD...Waterspouts and wind gusts to 40 knots.\n\nSOURCE...Radar indicated.\n\nIMPACT...Waterspouts can easily overturn boats and create locally\nhazardous seas. Small craft could be damaged in briefly\nhigher winds and suddenly higher waves.\n\n* Locations impacted include...\nMainly open waters of Northern Puerto Rico out 10 NM.",
+    "affectedZones": [
+      "https://api.weather.gov/zones/forecast/AMZ712"
+    ],
+    "geocode": {
+      "SAME": [
+        "075712"
+      ],
+      "UGC": [
+        "AMZ712"
+      ]
+    }
+  }
+}

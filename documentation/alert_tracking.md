@@ -16,6 +16,10 @@ The integration maintains a persistent `alert_tracking` list to track the lifecy
 
 Alert tracking data is preserved across Home Assistant restarts.
 
+The first successful update reconciles restored IDs before the sensor publishes them. When Home moves or the query mode changes, an ID present in both feeds stays `old`. An ID seen only at the new location is `new`. An ID left behind does not generate a `delete` notification. Within the same feed the usual deletion window applies.
+
+Home Assistant keeps the last successfully queried point in private entity restore data to distinguish a restart from a move. The point and NWS geometry are omitted from sensor attributes.
+
 ## Deletion Behavior
 
 Alerts marked as delete remain in the tracking list for 10 minutes before being removed.

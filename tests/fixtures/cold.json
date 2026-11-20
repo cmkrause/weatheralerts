@@ -1,0 +1,40 @@
+{
+  "type": "Feature",
+  "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.376ce225069ebe05c30f487f9288091d906bfd7a.002.1",
+  "geometry": null,
+  "properties": {
+    "id": "urn:oid:2.49.0.1.840.0.376ce225069ebe05c30f487f9288091d906bfd7a.002.1",
+    "event": "Cold Weather Advisory",
+    "areaDesc": "Yosemite NP outside of the valley; Upper San Joaquin River; Kaiser to Rodgers Ridge; Kings Canyon NP; Sequoia NP; South End of the Upper Sierra",
+    "sent": "2026-11-20T12:04:00-08:00",
+    "expires": "2026-11-20T20:15:00-08:00",
+    "headline": "Cold Weather Advisory issued November 20 at 12:04PM PST until November 21 at 8:00AM PST by NWS Hanford CA",
+    "description": "* WHAT...Very cold temperatures as low as 0 to 10 degrees above zero\nexpected.\n\n* WHERE...Kaiser to Rodgers Ridge, Kings Canyon NP, Sequoia NP, South\nEnd of the Upper Sierra, Upper San Joaquin River, and Yosemite NP\noutside of the valley.\n\n* WHEN...From 8 PM this evening to 8 AM PST Saturday.\n\n* IMPACTS...Frostbite and hypothermia will occur if unprotected skin\nis exposed to these temperatures. Very cold temperatures can lead\nto hypothermia with prolonged exposure.",
+    "affectedZones": [
+      "https://api.weather.gov/zones/forecast/CAZ323",
+      "https://api.weather.gov/zones/forecast/CAZ326",
+      "https://api.weather.gov/zones/forecast/CAZ327",
+      "https://api.weather.gov/zones/forecast/CAZ328",
+      "https://api.weather.gov/zones/forecast/CAZ330",
+      "https://api.weather.gov/zones/forecast/CAZ331"
+    ],
+    "geocode": {
+      "SAME": [
+        "006039",
+        "006043",
+        "006109",
+        "006019",
+        "006107",
+        "006029"
+      ],
+      "UGC": [
+        "CAZ323",
+        "CAZ326",
+        "CAZ327",
+        "CAZ328",
+        "CAZ330",
+        "CAZ331"
+      ]
+    }
+  }
+}
