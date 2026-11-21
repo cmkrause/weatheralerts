@@ -5,7 +5,7 @@ import json
 import os
 import sqlite3
 from contextlib import closing
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import MappingProxyType, SimpleNamespace
@@ -138,7 +138,11 @@ class GeometryTests(IsolatedAsyncioTestCase):
             for url in f["properties"]["affectedZones"]:
                 self.http.geometries.setdefault(url.removeprefix(ZONE), self.far)
         self.http.alerts = [cold, fog]
-        await self.co.async_refresh()
+        with patch(
+            "custom_components.weatheralerts.sensor.dt_util.now",
+            return_value=datetime.fromisoformat(fog["properties"]["sent"]),
+        ):
+            await self.co.async_refresh()
         self.assertTrue(self.co.last_update_success)
         entity = WeatherAlertsSensor(self.co, "weatheralerts_demo", "CAZ312,CAC107")
         data = entity.extra_state_attributes
