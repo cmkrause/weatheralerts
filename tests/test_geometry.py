@@ -299,6 +299,7 @@ class GeometryTests(IsolatedAsyncioTestCase):
     async def test_map_requests_do_not_write_geometry_or_rows_to_recorder(self):
         from homeassistant import loader
         from homeassistant.components.recorder import get_instance
+        from homeassistant.components.recorder.tasks import SynchronizeTask
         from homeassistant.config_entries import ConfigEntries
         from homeassistant.helpers import (
             device_registry,
@@ -355,15 +356,20 @@ class GeometryTests(IsolatedAsyncioTestCase):
                     ).fetchall(),
                 )
 
-        await hass.async_block_till_done()
-        await recorder.async_block_till_done()
-        before = await hass.async_add_executor_job(read_rows)
+        async def committed_rows():
+            await hass.async_block_till_done()
+            # Always queue a commit barrier. A worker may already have taken
+            # the state event off its queue while SQLite has yet to commit it.
+            committed = hass.loop.create_future()
+            recorder.queue_task(SynchronizeTask(committed))
+            await asyncio.wait_for(committed, 30)
+            return await hass.async_add_executor_job(read_rows)
+
+        before = await committed_rows()
         self.assertIn(marine["properties"]["id"], str(before))
         self.assertNotIn("coordinates", str(before))
         for _ in range(2):
             self.assertTrue(
                 (await self.co.map_area(marine["properties"]["id"]))["geometry"]
             )
-        await hass.async_block_till_done()
-        await recorder.async_block_till_done()
-        self.assertEqual(await hass.async_add_executor_job(read_rows), before)
+        self.assertEqual(await committed_rows(), before)
